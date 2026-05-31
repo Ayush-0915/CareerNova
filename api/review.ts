@@ -64,6 +64,80 @@ const SYSTEM_INSTRUCTIONS = `You are a senior technical recruiter and resume coa
 Score harshly. A 70 is "decent, would shortlist with reservations". A 90+ is rare. Be honest, not sycophantic.
 For rewrites, pick the THREE WEAKEST bullets and rewrite each in a single, punchy line with a quantified result.`;
 
+function extractJsonText(text: string) {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return trimmed;
+  return trimmed.slice(start, end + 1);
+}
+
+function normalizeScore(score: unknown) {
+  if (typeof score !== 'number' || Number.isNaN(score)) return 0;
+  if (score <= 10) return Math.round(score * 10);
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function normalizeReviewResult(result: unknown) {
+  if (!result || typeof result !== 'object') return result;
+
+  const record = result as Record<string, unknown>;
+  const categoryScores =
+    record.categoryScores && typeof record.categoryScores === 'object'
+      ? (record.categoryScores as Record<string, unknown>)
+      : null;
+
+  return {
+    ...record,
+    overallScore: normalizeScore(record.overallScore),
+    categoryScores: categoryScores
+      ? {
+          clarity: normalizeScore(categoryScores.clarity),
+          impact: normalizeScore(categoryScores.impact),
+          atsCompatibility: normalizeScore(categoryScores.atsCompatibility),
+          structure: normalizeScore(categoryScores.structure),
+        }
+      : record.categoryScores,
+  };
+}
+
+async function parseGeminiJson(text: string, apiKey: string) {
+  const cleaned = extractJsonText(text);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Fallback: ask Gemini to repair the malformed JSON.
+    const repairUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const repairRes = await fetch(repairUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `Convert the following into valid JSON only. Return only JSON, no markdown, no commentary:\n\n${text}`,
+              },
+            ],
+          },
+        ],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0, maxOutputTokens: 2048 },
+      }),
+    });
+
+    if (!repairRes.ok) {
+      const repairErr = await repairRes.text();
+      throw new Error(`repair_failed:${repairRes.status}:${repairErr.slice(0, 500)}`);
+    }
+
+    const repairData = await repairRes.json();
+    const repairText: string | undefined = repairData?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!repairText) throw new Error('repair_failed:empty_response');
+    return JSON.parse(extractJsonText(repairText));
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only POST allowed
   if (req.method !== 'POST') {
@@ -108,22 +182,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTIONS }] },
+        systemInstruction: {
+          parts: [{ text: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.' }],
+        },
         contents: [
           {
             role: 'user',
             parts: [
               {
-                text: `Review this resume and respond ONLY with JSON matching the provided schema.\n\n--- RESUME START ---\n${trimmed}\n--- RESUME END ---`,
+                text: `Review this resume and answer in JSON: ${trimmed}`,
               },
             ],
           },
         ],
         generationConfig: {
           responseMimeType: 'application/json',
-          responseSchema: RESPONSE_SCHEMA,
-          temperature: 0.2,
-          maxOutputTokens: 8192,
+          temperature: 0,
+          maxOutputTokens: 2048,
         },
       }),
     });
@@ -158,15 +233,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Some Gemini responses wrap JSON in ```json ... ``` even with responseMimeType set.
     // Strip these defensively before parsing.
-    const cleaned = text
-      .trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
     let parsed;
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = await parseGeminiJson(text, apiKey);
     } catch {
       console.error('--- GEMINI RAW TEXT (parse failed) ---');
       console.error('finishReason:', finishReason);
@@ -178,17 +247,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Attempt to save the review to Supabase if configured (non-blocking for the client).
-    (async () => {
-      try {
-        await insertReview({ resume_text: trimmed, result: parsed });
-      } catch (e) {
-        // Log but do not fail the request if Supabase isn't configured or insert fails.
-        console.error('Supabase insert failed:', e instanceof Error ? e.message : e);
-      }
-    })();
+    // Save the uploaded resume and its review to Supabase when configured.
+    // A storage issue should not break the review response, so we log and continue.
+    try {
+      await insertReview({ resume_text: trimmed, result: parsed });
+    } catch (e) {
+      console.error('Supabase insert failed:', e instanceof Error ? e.message : e);
+    }
 
-    return res.status(200).json(parsed);
+    return res.status(200).json(normalizeReviewResult(parsed));
   } catch (err) {
     console.error('Unexpected handler error:', err);
     return res.status(500).json({ error: 'Internal server error.' });

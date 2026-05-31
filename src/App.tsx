@@ -4,13 +4,113 @@ import { AlertCircle } from 'lucide-react';
 import UploadZone from './components/UploadZone';
 import LoadingState from './components/LoadingState';
 import ResultView from './components/ResultView';
-import type { ReviewResult } from './lib/types';
+import type { CategoryScores, ReviewResult } from './lib/types';
 
 type AppState =
   | { phase: 'idle' }
   | { phase: 'loading'; resumeText: string }
   | { phase: 'result'; resumeText: string; result: ReviewResult }
   | { phase: 'error'; resumeText: string; error: string };
+
+const DEFAULT_CATEGORY_SCORES: CategoryScores = {
+  clarity: 0,
+  impact: 0,
+  atsCompatibility: 0,
+  structure: 0,
+};
+
+const normalizeReviewResult = (value: unknown): ReviewResult => {
+  const base: ReviewResult = {
+    overallScore: 0,
+    categoryScores: DEFAULT_CATEGORY_SCORES,
+    summary: 'No review summary was returned.',
+    strengths: [],
+    weaknesses: [],
+    rewrites: [],
+    missingSections: [],
+  };
+
+  if (!value || typeof value !== 'object') return base;
+
+  const record = value as Record<string, unknown>;
+  const categoryScores =
+    record.categoryScores && typeof record.categoryScores === 'object'
+      ? (record.categoryScores as Partial<CategoryScores>)
+      : undefined;
+
+  const scaleScore = (score: unknown) => {
+    if (typeof score !== 'number' || Number.isNaN(score)) return 0;
+    if (score <= 10) return Math.round(score * 10);
+    return Math.max(0, Math.min(100, Math.round(score)));
+  };
+
+  const strengths = Array.isArray(record.strengths)
+    ? record.strengths.filter((item): item is string => typeof item === 'string')
+    : [];
+  const weaknesses = Array.isArray(record.weaknesses)
+    ? record.weaknesses.filter((item): item is string => typeof item === 'string')
+    : [];
+  const rewrites = Array.isArray(record.rewrites)
+    ? record.rewrites.filter((item): item is ReviewResult['rewrites'][number] => {
+        return Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof (item as Record<string, unknown>).original === 'string' &&
+            typeof (item as Record<string, unknown>).suggested === 'string' &&
+            typeof (item as Record<string, unknown>).reason === 'string',
+        );
+      })
+    : [];
+
+  return {
+    overallScore: typeof record.overallScore === 'number' ? record.overallScore : base.overallScore,
+    categoryScores: {
+      clarity: scaleScore(categoryScores?.clarity),
+      impact: scaleScore(categoryScores?.impact),
+      atsCompatibility: scaleScore(categoryScores?.atsCompatibility),
+      structure: scaleScore(categoryScores?.structure),
+    },
+    summary: typeof record.summary === 'string' ? record.summary : base.summary,
+    strengths,
+    weaknesses,
+    rewrites,
+    missingSections: Array.isArray(record.missingSections)
+      ? record.missingSections.filter((item): item is string => typeof item === 'string')
+      : [],
+  };
+};
+
+const getFriendlyErrorMessage = (value: unknown, fallback: string) => {
+  if (!value || typeof value !== 'object') return fallback;
+
+  const record = value as Record<string, unknown>;
+  const error = record.error;
+
+  if (error && typeof error === 'object') {
+    const errorRecord = error as Record<string, unknown>;
+    const code = errorRecord.code;
+    const status = errorRecord.status;
+    const message = errorRecord.message;
+
+    if (
+      code === 429 ||
+      status === 'RESOURCE_EXHAUSTED' ||
+      (typeof message === 'string' && message.toLowerCase().includes('quota'))
+    ) {
+      return "You've hit the Gemini free-tier limit. Try again later.";
+    }
+
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+
+    return JSON.stringify(errorRecord, null, 2);
+  }
+
+  if (typeof error === 'string') return error;
+
+  return fallback;
+};
 
 const App = () => {
   const [state, setState] = useState<AppState>({ phase: 'idle' });
@@ -44,16 +144,15 @@ const App = () => {
       if (!res.ok) {
         // `data` may be an object with an `error` field when parse succeeded.
         let errMsg = 'Review failed.';
-        if (typeof data === 'object' && data && 'error' in (data as any)) {
-          const e = (data as any).error;
-          errMsg = typeof e === 'string' ? e : JSON.stringify(e, null, 2);
+        if (typeof data === 'object' && data) {
+          errMsg = getFriendlyErrorMessage(data, errMsg);
         } else if (typeof data === 'string') {
           errMsg = data;
         }
         throw new Error(errMsg);
       }
 
-      setState({ phase: 'result', resumeText, result: data as ReviewResult });
+      setState({ phase: 'result', resumeText, result: normalizeReviewResult(data) });
 
       // Scroll to top so the user sees the score
       window.scrollTo({ top: 0, behavior: 'smooth' });

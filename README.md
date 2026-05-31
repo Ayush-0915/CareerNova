@@ -68,6 +68,7 @@ All available example variables are in `.env.example`:
 Notes:
 
 - Use `vercel dev` to run serverless functions locally; it reads `.env` automatically.
+- To store reviewed resumes in Supabase, create the `public.reviews` table using [supabase/migrations/20260531_create_reviews.sql](supabase/migrations/20260531_create_reviews.sql).
 
 ## Project structure (high level)
 
@@ -103,6 +104,7 @@ Notes:
 - The `api/` folder contains serverless functions compatible with `vercel dev` and Vercel deployments.
 - `lib/pdfExtract.ts` performs client-side PDF extraction; move heavy processing to server if needed for large files.
 - Keep secrets out of the repo — use `.env` or Vercel environment settings for production keys.
+- Resume review results are stored in Supabase only when the `public.reviews` table exists and `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are configured.
 
 ## Known issues / tips
 
