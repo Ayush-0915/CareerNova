@@ -25,10 +25,26 @@ const App = () => {
         body: JSON.stringify({ resumeText }),
       });
 
-      const data = await res.json();
+      // Read raw text first so we can provide a useful error message when the
+      // server returns HTML or other non-JSON responses (e.g. platform error
+      // pages that begin with "A server error..."). Try parsing JSON, but
+      // fall back to the raw text for errors.
+      const raw = await res.text();
+      let data: unknown;
+      try {
+        data = raw ? JSON.parse(raw) : undefined;
+      } catch {
+        // If parsing failed and the response wasn't OK, surface the raw text
+        // (which often contains a human-friendly error). If it was OK but
+        // returned malformed JSON, throw a specific error.
+        if (!res.ok) throw new Error(raw || 'Review failed.');
+        throw new Error('AI returned malformed JSON. Try again.');
+      }
 
       if (!res.ok) {
-        throw new Error(data.error || 'Review failed.');
+        // `data` may be an object with an `error` field when parse succeeded.
+        const errMsg = typeof data === 'object' && data && 'error' in (data as any) ? (data as any).error : 'Review failed.';
+        throw new Error(errMsg);
       }
 
       setState({ phase: 'result', resumeText, result: data as ReviewResult });
