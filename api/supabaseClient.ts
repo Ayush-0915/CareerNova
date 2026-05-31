@@ -24,7 +24,10 @@ export async function insertReview(record: {
     result: record.result,
   };
 
-  const { data, error } = await supabase.from('reviews').insert([payload]).select();
+  // `supabase-js` can infer table types from a generated types file; in this
+  // lightweight repo we don't have those types, so cast to `any` to allow
+  // inserting a plain object without a TypeScript error.
+  const { data, error } = await supabase.from('reviews').insert([payload] as any).select();
   if (error) throw error;
   return data;
 }
