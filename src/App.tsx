@@ -170,12 +170,14 @@ const App = () => {
       <header className="w-full px-6 md:px-10 pt-6 md:pt-8 flex items-center justify-between">
         <a
           href="/"
-          className="flex items-center gap-2 text-[#D7E2EA] font-medium uppercase tracking-widest text-sm sm:text-base"
+          className="flex items-center gap-3 text-[#D7E2EA] font-medium uppercase tracking-widest text-sm sm:text-base"
         >
-          <span className="score-gradient font-black text-xl sm:text-2xl">
-            C
-          </span>
-          CareerNova
+          <img
+            src="/logo.svg"
+            alt="CareerNova logo"
+            className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl shadow-[0_10px_30px_rgba(182,0,168,0.22)]"
+          />
+          <span>CareerNova</span>
         </a>
         <span className="text-xs sm:text-sm uppercase tracking-widest text-[#D7E2EA]/40">
           Powered by Gemini
