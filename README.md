@@ -2,6 +2,10 @@
 
 A small web app to extract text from PDFs and gather reviews (frontend built with Vite + React + TypeScript).
 
+## Live Demo
+
+- [career-nova-dun.vercel.app](https://career-nova-dun.vercel.app/)
+
 ## Features
 
 - Upload PDF files and extract text client-side using `pdfjs-dist` (see `src/lib/pdfExtract.ts`).
