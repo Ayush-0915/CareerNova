@@ -43,7 +43,13 @@ const App = () => {
 
       if (!res.ok) {
         // `data` may be an object with an `error` field when parse succeeded.
-        const errMsg = typeof data === 'object' && data && 'error' in (data as any) ? (data as any).error : 'Review failed.';
+        let errMsg = 'Review failed.';
+        if (typeof data === 'object' && data && 'error' in (data as any)) {
+          const e = (data as any).error;
+          errMsg = typeof e === 'string' ? e : JSON.stringify(e, null, 2);
+        } else if (typeof data === 'string') {
+          errMsg = data;
+        }
         throw new Error(errMsg);
       }
 
