@@ -114,6 +114,10 @@ Notes:
 
 - Open an issue or submit a PR. Keep changes focused and run the app locally to verify.
 
+## Author
+
+- Ayushh
+
 ## License
 
-- (add a license if desired)
+- Copyright © 2026 Ayush Singh. All rights reserved.
