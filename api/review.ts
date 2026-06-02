@@ -1,5 +1,19 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { insertReview } from './supabaseClient.js';
+// Dynamically import Supabase client at runtime to avoid module resolution
+// failures during cold start; use `safeInsertReview` to persist reviews
+// without letting a missing dependency crash the function.
+async function safeInsertReview(record: { resume_text?: string | null; result: unknown }) {
+  try {
+    const mod = await import('./supabaseClient.js');
+    if (mod && typeof mod.insertReview === 'function') {
+      await mod.insertReview(record);
+    } else {
+      console.warn('supabaseClient.insertReview is not available');
+    }
+  } catch (e) {
+    console.error('Could not save review to Supabase:', e instanceof Error ? e.message : e);
+  }
+}
 
 /**
  * Gemini structured-output schema. Gemini will return JSON that conforms
@@ -331,11 +345,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const fallback = generateFallbackReview(trimmed);
       console.log('FALLBACK REVIEW', JSON.stringify(fallback));
       // Attempt to save review (non-blocking) then return fallback result
-      try {
-        await insertReview({ resume_text: trimmed, result: fallback });
-      } catch (e) {
-        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
-      }
+      await safeInsertReview({ resume_text: trimmed, result: fallback });
 
       return res.status(200).json(normalizeReviewResult(fallback));
     }
@@ -366,11 +376,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.warn('Using fallback review due to malformed AI output');
       const fallback = generateFallbackReview(trimmed);
       console.log('FALLBACK REVIEW', JSON.stringify(fallback));
-      try {
-        await insertReview({ resume_text: trimmed, result: fallback });
-      } catch (e) {
-        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
-      }
+      await safeInsertReview({ resume_text: trimmed, result: fallback });
       return res.status(200).json(normalizeReviewResult(fallback));
     }
 
@@ -385,21 +391,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!isValidParsed) {
       console.warn('Parsed AI result missing expected fields — using fallback review');
       const fallback = generateFallbackReview(trimmed);
-      try {
-        await insertReview({ resume_text: trimmed, result: fallback });
-      } catch (e) {
-        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
-      }
+      await safeInsertReview({ resume_text: trimmed, result: fallback });
       return res.status(200).json(normalizeReviewResult(fallback));
     }
 
     // Save the uploaded resume and its review to Supabase when configured.
     // A storage issue should not break the review response, so we log and continue.
-    try {
-      await insertReview({ resume_text: trimmed, result: parsed });
-    } catch (e) {
-      console.error('Supabase insert failed:', e instanceof Error ? e.message : e);
-    }
+    await safeInsertReview({ resume_text: trimmed, result: parsed });
 
     return res.status(200).json(normalizeReviewResult(parsed));
   } catch (err) {
