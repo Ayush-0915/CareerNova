@@ -181,7 +181,7 @@ const ResultView = ({ result, resumeText, onReset }: ResultViewProps) => {
             </h3>
           </div>
           <ul className="flex flex-col gap-4">
-            {result.weaknesses.map((w, i) => (
+            {displayWeaknesses.map((w, i) => (
               <li key={i} className="flex gap-3 text-[#D7E2EA]/90 leading-relaxed">
                 <span className="text-amber-400/60 font-medium shrink-0">
                   {String(i + 1).padStart(2, '0')}
