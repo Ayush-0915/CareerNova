@@ -271,8 +271,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // Vercel auto-parses JSON bodies into req.body
-  const { resumeText } = (req.body ?? {}) as { resumeText?: unknown };
+  // Vercel usually auto-parses JSON bodies into `req.body`, but in some
+  // deployments this may not be available. Attempt to read from `req.body`,
+  // and fall back to manually parsing the raw request body.
+  let resumeText: unknown = (req.body ?? {}) as { resumeText?: unknown };
+  if (typeof resumeText !== 'string') {
+    // If req.body is an object, extract the field; otherwise try raw body
+    if (req && typeof req === 'object' && 'body' in req && req.body && typeof req.body === 'object') {
+      resumeText = (req.body as Record<string, unknown>).resumeText;
+    }
+  }
+
+  if (typeof resumeText !== 'string') {
+    // Attempt to read raw request body as a last resort
+    try {
+      let raw = '';
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (chunk: Buffer) => (raw += chunk.toString()));
+        req.on('end', () => resolve());
+        req.on('error', (err) => reject(err));
+      });
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          resumeText = parsed.resumeText;
+        } catch {
+          // ignore parse error
+        }
+      }
+    } catch (e) {
+      console.error('Failed to read raw request body:', e);
+    }
+  }
 
   if (typeof resumeText !== 'string') {
     return res.status(400).json({ error: 'Field `resumeText` (string) is required.' });
