@@ -37,6 +37,20 @@ const scoreLabel = (score: number): string => {
 };
 
 const ResultView = ({ result, resumeText, onReset }: ResultViewProps) => {
+  const generateWeaknessesFromText = (text: string) => {
+    const lowered = text.toLowerCase();
+    const digits = (text.match(/\d+/g) || []).length;
+    const actionWords = ['led', 'managed', 'improved', 'developed', 'built', 'optimized', 'mentored', 'created', 'designed', 'launched', 'owned'];
+    const actionCount = actionWords.reduce((n, w) => n + (lowered.includes(w) ? 1 : 0), 0);
+    const out: string[] = [];
+    if (digits === 0) out.push('Lacks quantified results — Fix: add numbers to achievements (e.g. "reduced X by Y%", "increased revenue by $X").');
+    if (actionCount === 0) out.push('Passive or vague language — Fix: start bullets with strong verbs and show ownership.');
+    if (text.length < 400) out.push('Resume is short; add more context and measurable outcomes.');
+    if (out.length === 0) out.push('Consider adding more quantified impact and clearer action verbs where possible.');
+    return out;
+  };
+
+  const displayWeaknesses = result.weaknesses && result.weaknesses.length > 0 ? result.weaknesses : generateWeaknessesFromText(resumeText);
   return (
     <div className="w-full max-w-6xl mx-auto flex flex-col gap-10 sm:gap-14">
       {/* Top bar */}
