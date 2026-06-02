@@ -16,7 +16,7 @@ function loadEnv(path) {
 
 async function main(){
   const env = loadEnv('.env');
-  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
   if (!key) { console.error('no key'); process.exit(2);} 
   const model = 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;

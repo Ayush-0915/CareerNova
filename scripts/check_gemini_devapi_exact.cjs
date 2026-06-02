@@ -16,7 +16,7 @@ function loadEnv(path) {
 
 async function main() {
   const env = loadEnv('.env');
-  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
   if (!key) {
     console.error('No key');
     process.exit(2);

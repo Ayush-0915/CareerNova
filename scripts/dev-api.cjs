@@ -20,7 +20,7 @@ function loadEnv(path) {
 
 async function start() {
   const env = loadEnv('.env');
-  const GEMINI_API_KEY = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  const GEMINI_API_KEY = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
   const SUPABASE_URL = env.SUPABASE_URL || process.env.SUPABASE_URL;
   const SUPABASE_SERVICE_KEY = env.SUPABASE_SERVICE_KEY || env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
   if (!GEMINI_API_KEY) {
