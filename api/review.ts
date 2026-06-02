@@ -138,6 +138,109 @@ async function parseGeminiJson(text: string, apiKey: string) {
   }
 }
 
+async function fetchWithRetries(url: string, init: RequestInit, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetch(url, init);
+    if (res.ok) return res;
+
+    // Retry on common transient server errors with exponential backoff.
+    if ([500, 502, 503, 504].includes(res.status) && i < attempts - 1) {
+      const wait = 500 * Math.pow(2, i);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+
+    return res;
+  }
+
+  throw new Error('fetch_failed');
+}
+
+/**
+ * Generate a simple fallback review when the AI provider is unavailable.
+ * This uses lightweight heuristics and is intentionally conservative
+ * (no fabricated metrics) — it helps the UI show scores and suggestions
+ * when Gemini is down.
+ */
+function generateFallbackReview(text: string) {
+  const lowered = text.toLowerCase();
+  const words = Math.max(50, text.split(/\s+/).length);
+  const digits = (text.match(/\d+/g) || []).length;
+  const actionWords = ['led', 'managed', 'improved', 'developed', 'built', 'optimized', 'mentored', 'created', 'designed', 'launched', 'owned'];
+  const actionCount = actionWords.reduce((n, w) => n + (lowered.includes(w) ? 1 : 0), 0);
+
+  const keywordList = ['javascript', 'typescript', 'react', 'node', 'aws', 'python', 'docker', 'kubernetes', 'sql'];
+  const keywordCount = keywordList.reduce((n, k) => n + (lowered.includes(k) ? 1 : 0), 0);
+
+  const overallScore = Math.max(35, Math.min(92, Math.round(40 + actionCount * 10 + Math.min(30, digits * 5) + Math.min(15, words / 200))));
+
+  const categoryScores = {
+    clarity: Math.max(30, Math.min(100, Math.round(overallScore * (0.9 - Math.max(0, (words - 800) / 2000))))),
+    impact: Math.max(25, Math.min(100, Math.round(overallScore * (0.75 + (actionCount / 6))))),
+    atsCompatibility: Math.max(20, Math.min(100, Math.round(overallScore * (0.6 + keywordCount * 0.08)))),
+    structure: Math.max(20, Math.min(100, Math.round(overallScore * (0.7 + Math.min(0.25, (text.split('\n').length / 20)))))),
+  };
+
+  const strengths: string[] = [];
+  if (actionCount > 0) strengths.push('Uses action-oriented verbs and shows ownership of work.');
+  if (digits > 0) strengths.push('Includes numeric achievements or years of experience.');
+  if (keywordCount > 0) strengths.push('Mentions relevant technical keywords for ATS.');
+  if (strengths.length === 0) strengths.push('Clear, concise lines detected.');
+
+  const weaknesses: string[] = [];
+  if (digits === 0) weaknesses.push('Lacks quantified results — add numbers where possible. Fix: quantify achievements (e.g., "reduced latency by 40%", "increased revenue by $X").');
+  if (actionCount === 0) weaknesses.push('Many lines are passive or vague — prefer strong verbs. Fix: start bullets with verbs like "Led", "Improved", "Built" and show ownership.');
+  if (text.length < 400) weaknesses.push('Resume is short; consider adding more detail on impact. Fix: expand bullets with one-line context + measurable outcome.');
+
+  // Suggested rewrites: find candidate lines to improve
+  const candidates = text.split(/\r?\n|[\.\n]/).map((s) => s.trim()).filter(Boolean);
+  const pick: string[] = [];
+  for (const c of candidates) {
+    if (pick.length >= 3) break;
+    if (/responsible for|worked on|assisted|helped|participated/.test(c.toLowerCase()) || c.length > 120) {
+      pick.push(c);
+    }
+  }
+  // Fallback: take first up to 3 short lines if none matched
+  if (pick.length === 0) pick.push(...candidates.slice(0, 3));
+
+  const rewrites = pick.slice(0, 3).map((orig) => {
+    // Create a clearer suggested rewrite that nudges toward active voice
+    const base = orig
+      .replace(/responsible for/gi, 'owned')
+      .replace(/worked on/gi, 'developed')
+      .replace(/helped/gi, 'contributed to')
+      .replace(/assisted/gi, 'supported')
+      .replace(/participated/gi, 'helped lead')
+      .replace(/was /gi, '')
+      .trim();
+
+    const suggested = base.length > 0 ? `${base} — rewrite to active voice and add a quantified result if possible.` : `${orig} — rewrite to active voice and add a quantified result if possible.`;
+
+    return {
+      original: orig,
+      suggested,
+      reason: 'Rewrite to active voice and include a measurable outcome (e.g., "reduced X by Y%", "improved throughput by Nx").',
+    };
+  });
+
+  const missingSections: string[] = [];
+  if (!/skills/i.test(text)) missingSections.push('Skills');
+  if (!/education/i.test(text)) missingSections.push('Education');
+  if (!/projects/i.test(text) && !/portfolio/i.test(text)) missingSections.push('Projects');
+
+  return {
+    overallScore,
+    categoryScores,
+    summary: 'Fallback review: AI was unavailable. This heuristic review highlights obvious strengths and areas to quantify.',
+    strengths,
+    weaknesses,
+    rewrites,
+    missingSections,
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only POST allowed
   if (req.method !== 'POST') {
@@ -178,36 +281,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   try {
-    const geminiRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.' }],
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `Review this resume and answer in JSON: ${trimmed}`,
-              },
-            ],
+    const geminiRes = await fetchWithRetries(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.' }],
           },
-        ],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0,
-          maxOutputTokens: 2048,
-        },
-      }),
-    });
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Review this resume and answer in JSON: ${trimmed}`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0,
+            maxOutputTokens: 2048,
+          },
+        }),
+      },
+      3,
+    );
 
     if (!geminiRes.ok) {
       const errBody = await geminiRes.text();
       console.error('Gemini error:', geminiRes.status, errBody);
 
-      // Map common upstream errors to friendlier messages
+      // Keep errors for client-handled cases (rate limits, invalid key)
       if (geminiRes.status === 429) {
         return res.status(429).json({
           error: "Hit Gemini's free-tier rate limit. Wait a minute and try again.",
@@ -218,7 +325,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           error: 'Gemini rejected the request — likely an invalid API key. Check GEMINI_API_KEY.',
         });
       }
-      return res.status(502).json({ error: 'AI provider failed. Try again in a moment.' });
+
+      // For transient errors (503/5xx) fall back to a local heuristic review
+      console.warn('Using fallback review due to AI provider error');
+      const fallback = generateFallbackReview(trimmed);
+      console.log('FALLBACK REVIEW', JSON.stringify(fallback));
+      // Attempt to save review (non-blocking) then return fallback result
+      try {
+        await insertReview({ resume_text: trimmed, result: fallback });
+      } catch (e) {
+        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
+      }
+
+      return res.status(200).json(normalizeReviewResult(fallback));
     }
 
     const data = await geminiRes.json();
@@ -242,9 +361,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('text length:', text.length);
       console.error(text.slice(0, 2000));
       console.error('--- END ---');
-      return res.status(502).json({
-        error: `AI returned malformed JSON${finishReason === 'MAX_TOKENS' ? ' (response was truncated — too long).' : '.'} Try again.`,
-      });
+
+      // Use fallback review when Gemini returns malformed JSON
+      console.warn('Using fallback review due to malformed AI output');
+      const fallback = generateFallbackReview(trimmed);
+      console.log('FALLBACK REVIEW', JSON.stringify(fallback));
+      try {
+        await insertReview({ resume_text: trimmed, result: fallback });
+      } catch (e) {
+        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
+      }
+      return res.status(200).json(normalizeReviewResult(fallback));
+    }
+
+    // Validate parsed output contains the key fields we expect. If not,
+    // fall back to the local heuristic review so the UI shows useful data.
+    const isValidParsed =
+      parsed && typeof parsed === 'object' &&
+      typeof (parsed as Record<string, unknown>).overallScore === 'number' &&
+      parsed.categoryScores && typeof parsed.categoryScores === 'object' &&
+      Array.isArray((parsed as Record<string, unknown>).rewrites);
+
+    if (!isValidParsed) {
+      console.warn('Parsed AI result missing expected fields — using fallback review');
+      const fallback = generateFallbackReview(trimmed);
+      try {
+        await insertReview({ resume_text: trimmed, result: fallback });
+      } catch (e) {
+        console.error('Supabase insert failed (fallback):', e instanceof Error ? e.message : e);
+      }
+      return res.status(200).json(normalizeReviewResult(fallback));
     }
 
     // Save the uploaded resume and its review to Supabase when configured.
