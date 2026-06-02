@@ -262,6 +262,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed. Use POST.' });
   }
 
+  // Debug: log incoming request metadata to help diagnose deployed issues.
+  try {
+    console.log('--- REQUEST START ---');
+    console.log('method=', req.method);
+    console.log('headers=', JSON.stringify(req.headers));
+    console.log('body type=', typeof req.body);
+    try {
+      console.log('body preview=', JSON.stringify(req.body).slice(0, 2000));
+    } catch (e) {
+      console.log('body preview unavailable');
+    }
+    console.log('--- REQUEST END ---');
+  } catch (e) {
+    console.error('Failed to log request metadata', e);
+  }
+
   const apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API;
   if (!apiKey) {
     return res.status(500).json({
