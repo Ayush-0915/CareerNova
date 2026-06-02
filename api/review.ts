@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { insertReview } from './supabaseClient';
+import { insertReview } from './supabaseClient.js';
 
 /**
  * Gemini structured-output schema. Gemini will return JSON that conforms
