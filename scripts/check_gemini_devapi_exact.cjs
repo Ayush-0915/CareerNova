@@ -16,36 +16,35 @@ function loadEnv(path) {
 
 async function main() {
   const env = loadEnv('.env');
-  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
-  if (!key) {
-    console.error('No key');
-    process.exit(2);
+  for (const key in env) {
+    process.env[key] = env[key];
   }
+  const { llmService } = await import('../api/llmService.js');
 
-  const model = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const trimmed = 'Experienced software engineer with 8 years building web apps. Led API design, performance optimizations, CI/CD, mentoring, and cross-functional deliveries. Improved deploy time by 40%, increased test coverage, and shipped multiple high-impact features.';
 
-  const payload = {
-    systemInstruction: { parts: [{ text: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.' }] },
-    contents: [
+  try {
+    const text = await llmService.generate([
+      {
+        role: 'system',
+        content: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.',
+      },
       {
         role: 'user',
-        parts: [{ text: `Review this resume and answer in JSON: ${trimmed}` }],
+        content: `Review this resume and answer in JSON: ${trimmed}`,
       },
-    ],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 1024 },
-  };
+    ], {
+      temperature: 0.2,
+      maxTokens: 1024,
+      responseFormat: 'json',
+    });
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  console.log('status', res.status);
-  const text = await res.text();
-  console.log(text.slice(0, 4000));
+    console.log('Response body:');
+    console.log(text);
+  } catch (e) {
+    console.error(e);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((e) => {

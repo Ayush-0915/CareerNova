@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { llmService } from './llmService.js';
 // Dynamically import Supabase client at runtime to avoid module resolution
 // failures during cold start; use `safeInsertReview` to persist reviews
 // without letting a missing dependency crash the function.
@@ -115,40 +116,27 @@ function normalizeReviewResult(result: unknown) {
   };
 }
 
-async function parseGeminiJson(text: string, apiKey: string) {
+async function parseGeminiJson(text: string) {
   const cleaned = extractJsonText(text);
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Fallback: ask Gemini to repair the malformed JSON.
-    const repairUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    const repairRes = await fetch(repairUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: `Convert the following into valid JSON only. Return only JSON, no markdown, no commentary:\n\n${text}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0, maxOutputTokens: 2048 },
-      }),
-    });
-
-    if (!repairRes.ok) {
-      const repairErr = await repairRes.text();
-      throw new Error(`repair_failed:${repairRes.status}:${repairErr.slice(0, 500)}`);
+    // Fallback: ask LLM service to repair the malformed JSON.
+    try {
+      const repairText = await llmService.generate([
+        {
+          role: 'user',
+          content: `Convert the following into valid JSON only. Return only JSON, no markdown, no commentary:\n\n${text}`,
+        },
+      ], {
+        temperature: 0,
+        maxTokens: 2048,
+        responseFormat: 'json',
+      });
+      return JSON.parse(extractJsonText(repairText));
+    } catch (repairErr: any) {
+      throw new Error(`repair_failed:${repairErr.message || repairErr}`);
     }
-
-    const repairData = await repairRes.json();
-    const repairText: string | undefined = repairData?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!repairText) throw new Error('repair_failed:empty_response');
-    return JSON.parse(extractJsonText(repairText));
   }
 }
 
@@ -256,6 +244,15 @@ function generateFallbackReview(text: string) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS Headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   // Only POST allowed
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -278,12 +275,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('Failed to log request metadata', e);
   }
 
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API;
-  if (!apiKey) {
+  const hasGemini = !!(process.env.GEMINI_API_KEY || process.env.GEMINI_API);
+  const hasGroq = !!process.env.GROQ_API_KEY;
+  if (!hasGemini && !hasGroq) {
     return res.status(500).json({
       error:
-        'Server misconfigured: GEMINI_API_KEY environment variable not set. ' +
-        'Set it in Vercel project settings, or in a local .env file when using `vercel dev`.',
+        'Server misconfigured: Neither GEMINI_API_KEY nor GROQ_API_KEY environment variable is set. ' +
+        'Set at least one in your project settings, or in a local .env file.',
     });
   }
 
@@ -325,6 +323,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const trimmed = resumeText.trim();
+  console.log('[Back-End] Validating resume length. Characters:', trimmed.length);
   if (trimmed.length < 100) {
     return res.status(400).json({
       error: 'Resume text is too short — please paste at least 100 characters.',
@@ -336,90 +335,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // Model: gemini-2.5-flash — on the free tier (no credit card), 250 RPD as of 2026.
-  const model = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
   try {
-    const geminiRes = await fetchWithRetries(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: 'You are a senior technical recruiter and resume coach. Provide a short JSON summary.' }],
-          },
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: `Review this resume and answer in JSON: ${trimmed}`,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0,
-            maxOutputTokens: 2048,
-          },
-        }),
-      },
-      3,
-    );
+    let text: string;
+    try {
+      console.log('[Back-End] Invoking central LLM service...');
+      text = await llmService.generate([
+        {
+          role: 'system',
+          content: SYSTEM_INSTRUCTIONS,
+        },
+        {
+          role: 'user',
+          content: `Review this resume and respond ONLY with JSON matching the provided schema.\n\n--- RESUME START ---\n${trimmed}\n--- RESUME END ---`,
+        },
+      ], {
+        temperature: 0,
+        maxTokens: 4096,
+        responseFormat: 'json',
+        responseSchema: RESPONSE_SCHEMA,
+      });
+      console.log('[Back-End] LLM service generation completed successfully. Response length:', text.length);
+    } catch (err: any) {
+      console.error('[Back-End] LLM generation failed completely:', err);
 
-    if (!geminiRes.ok) {
-      const errBody = await geminiRes.text();
-      console.error('Gemini error:', geminiRes.status, errBody);
-
-      // Keep errors for client-handled cases (rate limits, invalid key)
-      if (geminiRes.status === 429) {
-        return res.status(429).json({
-          error: "Hit Gemini's free-tier rate limit. Wait a minute and try again.",
-        });
-      }
-      if (geminiRes.status === 400 || geminiRes.status === 403) {
-        return res.status(geminiRes.status).json({
-          error: 'Gemini rejected the request — likely an invalid API key. Check GEMINI_API_KEY.',
-        });
-      }
-
-      // For transient errors (503/5xx) fall back to a local heuristic review
-      console.warn('Using fallback review due to AI provider error');
+      // Fall back to local heuristic review
+      console.warn('[Back-End] Using fallback review due to AI provider error');
       const fallback = generateFallbackReview(trimmed);
       console.log('FALLBACK REVIEW', JSON.stringify(fallback));
-      // Attempt to save review (non-blocking) then return fallback result
       await safeInsertReview({ resume_text: trimmed, result: fallback });
 
       return res.status(200).json(normalizeReviewResult(fallback));
     }
 
-    const data = await geminiRes.json();
-    const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    const finishReason: string | undefined = data?.candidates?.[0]?.finishReason;
-
-    if (!text) {
-      return res.status(502).json({
-        error: `AI returned an empty response${finishReason ? ` (${finishReason})` : ''}. Try again.`,
-      });
-    }
-
-    // Some Gemini responses wrap JSON in ```json ... ``` even with responseMimeType set.
-    // Strip these defensively before parsing.
+    // Some responses wrap JSON in ```json ... ```. Strip these defensively before parsing.
+    console.log('[Back-End] Parsing returned text to JSON...');
     let parsed;
     try {
-      parsed = await parseGeminiJson(text, apiKey);
+      parsed = await parseGeminiJson(text);
+      console.log('[Back-End] JSON parsed and validated successfully.');
     } catch {
-      console.error('--- GEMINI RAW TEXT (parse failed) ---');
-      console.error('finishReason:', finishReason);
+      console.error('--- AI RAW TEXT (parse failed) ---');
       console.error('text length:', text.length);
       console.error(text.slice(0, 2000));
       console.error('--- END ---');
 
-      // Use fallback review when Gemini returns malformed JSON
-      console.warn('Using fallback review due to malformed AI output');
+      // Use fallback review when AI returns malformed JSON
+      console.warn('[Back-End] Using fallback review due to malformed AI output');
       const fallback = generateFallbackReview(trimmed);
       console.log('FALLBACK REVIEW', JSON.stringify(fallback));
       await safeInsertReview({ resume_text: trimmed, result: fallback });

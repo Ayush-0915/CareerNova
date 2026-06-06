@@ -65,7 +65,9 @@ npm run preview
 
 All available example variables are in `.env.example`:
 
-- `GEMINI_API_KEY` — API key for the LLM (if used).
+- `GEMINI_API_KEY` — API key for the LLM (Gemini, primary provider).
+- `GROQ_API_KEY` — API key for Groq (automatic fallback provider).
+- `VITE_API_URL` — optional production endpoint URL to bypass local backend mock servers (e.g. `https://career-nova-dun.vercel.excel/api/review`).
 - `SUPABASE_URL` — optional Supabase project URL.
 - `SUPABASE_SERVICE_KEY` — optional service role key (server-only). Keep secret.
 

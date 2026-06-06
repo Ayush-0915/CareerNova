@@ -116,23 +116,24 @@ const App = () => {
   const [state, setState] = useState<AppState>({ phase: 'idle' });
 
   const handleReview = async (resumeText: string) => {
+    console.log('[Front-End] Resume upload initiated. Text length:', resumeText.length);
     setState({ phase: 'loading', resumeText });
 
     try {
-      const res = await fetch('/api/review', {
+      const apiUrl = (import.meta.env.VITE_API_URL as string) || '/api/review';
+      console.log('[Front-End] Dispatching API request to', apiUrl);
+      const res = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resumeText }),
       });
 
-      // Read raw text first so we can provide a useful error message when the
-      // server returns HTML or other non-JSON responses (e.g. platform error
-      // pages that begin with "A server error..."). Try parsing JSON, but
-      // fall back to the raw text for errors.
+      console.log('[Front-End] API response status received:', res.status);
       const raw = await res.text();
       let data: unknown;
       try {
         data = raw ? JSON.parse(raw) : undefined;
+        console.log('[Front-End] JSON parsed successfully from response.');
       } catch {
         // If parsing failed and the response wasn't OK, surface the raw text
         // (which often contains a human-friendly error). If it was OK but
@@ -152,6 +153,7 @@ const App = () => {
         throw new Error(errMsg);
       }
 
+      console.log('[Front-End] Rendering review results.');
       setState({ phase: 'result', resumeText, result: normalizeReviewResult(data) });
 
       // Scroll to top so the user sees the score

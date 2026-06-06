@@ -20,33 +20,23 @@ function loadEnv(path) {
 
 async function main() {
   const env = loadEnv('.env');
-  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
-  if (!key) {
-    console.error('No GEMINI_API_KEY found in .env or environment.');
-    process.exitCode = 2;
-    return;
+  for (const key in env) {
+    process.env[key] = env[key];
   }
-
-  const model = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  const { llmService } = await import('../api/llmService.js');
 
   try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: 'You are a helpful assistant.' }] },
-        contents: [ { role: 'user', parts: [{ text: 'Say "hello" in one word.' }] } ],
-        generationConfig: { temperature: 0.0, maxOutputTokens: 32, responseMimeType: 'text/plain' }
-      })
+    const text = await llmService.generate([
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Say "hello" in one word.' }
+    ], {
+      temperature: 0.0,
+      maxTokens: 32
     });
 
-    console.log('Gemini API status:', resp.status, resp.statusText);
-    const text = await resp.text();
     console.log('--- Response body ---');
-    console.log(text.slice(0, 2000));
+    console.log(text);
     console.log('--- End ---');
-    if (!resp.ok) process.exitCode = 3;
   } catch (err) {
     console.error('Request failed:', err && err.message ? err.message : err);
     process.exitCode = 4;

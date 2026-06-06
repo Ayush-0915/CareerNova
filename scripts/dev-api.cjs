@@ -20,20 +20,38 @@ function loadEnv(path) {
 
 async function start() {
   const env = loadEnv('.env');
-  const GEMINI_API_KEY = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
-  const SUPABASE_URL = env.SUPABASE_URL || process.env.SUPABASE_URL;
-  const SUPABASE_SERVICE_KEY = env.SUPABASE_SERVICE_KEY || env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
-  if (!GEMINI_API_KEY) {
-    console.warn('Warning: GEMINI_API_KEY not set in .env; endpoint will return 500.');
+  for (const key in env) {
+    process.env[key] = env[key];
+  }
+  const { llmService } = await import('../api/llmService.js');
+
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GEMINI_API;
+  const GROQ_API_KEY = process.env.GROQ_API_KEY;
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
+
+  if (!GEMINI_API_KEY && !GROQ_API_KEY) {
+    console.warn('Warning: Neither GEMINI_API_KEY nor GROQ_API_KEY is set in .env or environment.');
   } else {
-    const len = GEMINI_API_KEY.length;
-    const prefix = GEMINI_API_KEY.slice(0, 4);
-    const suffix = GEMINI_API_KEY.slice(-4);
-    console.log(`GEMINI_API_KEY present (length=${len}, prefix=${prefix}..., suffix=...${suffix})`);
+    if (GEMINI_API_KEY) {
+      console.log(`GEMINI_API_KEY present (length=${GEMINI_API_KEY.length}, prefix=${GEMINI_API_KEY.slice(0, 4)}..., suffix=...${GEMINI_API_KEY.slice(-4)})`);
+    }
+    if (GROQ_API_KEY) {
+      console.log(`GROQ_API_KEY present (length=${GROQ_API_KEY.length}, prefix=${GROQ_API_KEY.slice(0, 4)}..., suffix=...${GROQ_API_KEY.slice(-4)})`);
+    }
   }
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   async function insertReview(record) {
     if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
@@ -112,57 +130,46 @@ async function start() {
       const { resumeText } = req.body || {};
       if (typeof resumeText !== 'string') return res.status(400).json({ error: 'Field `resumeText` (string) is required.' });
       const trimmed = resumeText.trim();
+      console.log('[Dev-API] Request received. Text length:', trimmed.length);
       if (trimmed.length < 100) return res.status(400).json({ error: 'Resume text is too short — please paste at least 100 characters.' });
 
-      const model = 'gemini-2.5-flash';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-
-      const geminiRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: 'You are a senior technical recruiter and resume coach. Review resumes critically but constructively.' }] },
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `Review this resume and respond ONLY with JSON matching the provided schema.\n\n--- RESUME START ---\n${trimmed}\n--- RESUME END ---` }],
-            },
-          ],
-          generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0, maxOutputTokens: 4096 }
-        })
-      });
-
-      if (!geminiRes.ok) {
-        const txt = await geminiRes.text();
-        console.error('Gemini responded with non-OK status:', geminiRes.status, txt.slice(0,2000));
-        if (geminiRes.status === 429) {
-          return res.status(429).json({
-            error: "You've hit the Gemini free-tier limit. Try again later.",
-          });
-        }
-        if (geminiRes.status === 400 || geminiRes.status === 403) {
-          return res.status(geminiRes.status).json({
-            error: 'Gemini rejected the request — check your API key.',
-          });
-        }
-        return res.status(geminiRes.status).send(txt);
+      let text;
+      try {
+        console.log('[Dev-API] Invoking central LLM service...');
+        text = await llmService.generate([
+          {
+            role: 'system',
+            content: 'You are a senior technical recruiter and resume coach. Review resumes critically but constructively.',
+          },
+          {
+            role: 'user',
+            content: `Review this resume and respond ONLY with JSON matching the provided schema.\n\n--- RESUME START ---\n${trimmed}\n--- RESUME END ---`,
+          }
+        ], {
+          temperature: 0,
+          maxTokens: 4096,
+          responseFormat: 'json',
+          responseSchema: RESPONSE_SCHEMA
+        });
+        console.log('[Dev-API] LLM service generation completed. Response length:', text.length);
+      } catch (err) {
+        console.error('[Dev-API] LLM service generation failed:', err);
+        return res.status(500).json({ error: 'LLM service generation failed: ' + (err.message || err) });
       }
 
-      const data = await geminiRes.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) return res.status(502).json({ error: 'AI returned empty response.' });
-
+      console.log('[Dev-API] Parsing response JSON...');
       const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       try {
         const parsed = normalizeReviewResult(JSON.parse(cleaned));
+        console.log('[Dev-API] JSON parsed and validated successfully.');
         try {
           await insertReview({ resume_text: trimmed, result: parsed });
         } catch (e) {
-          console.error('dev-api supabase insert error:', e);
+          console.error('[Dev-API] Supabase insert error:', e);
         }
         return res.status(200).json(parsed);
       } catch (e) {
-        console.error('dev-api parse error:', e);
+        console.error('[Dev-API] JSON parse error:', e);
         return res.status(502).json({ error: 'AI returned malformed JSON.' });
       }
     } catch (err) {

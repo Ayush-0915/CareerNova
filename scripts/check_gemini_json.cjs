@@ -14,23 +14,34 @@ function loadEnv(path) {
   return out;
 }
 
-async function main(){
+async function main() {
   const env = loadEnv('.env');
-  const key = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GEMINI_API;
-  if (!key) { console.error('no key'); process.exit(2);} 
-  const model = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const body = {
-    systemInstruction: { parts: [{ text: 'You are a helpful assistant.' }] },
-    contents: [ { role: 'user', parts: [{ text: 'Return a JSON object {"ok":true}'}] } ],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.0, maxOutputTokens: 128 }
-  };
-  try{
-    const res = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    console.log('status', res.status);
-    const txt = await res.text();
-    console.log(txt.slice(0,2000));
-  }catch(e){console.error(e)}
+  for (const key in env) {
+    process.env[key] = env[key];
+  }
+  const { llmService } = await import('../api/llmService.js');
+
+  try {
+    const text = await llmService.generate([
+      {
+        role: 'system',
+        content: 'You are a helpful assistant.',
+      },
+      {
+        role: 'user',
+        content: 'Return a JSON object {"ok":true}',
+      },
+    ], {
+      temperature: 0.0,
+      maxTokens: 128,
+      responseFormat: 'json',
+    });
+
+    console.log('Response body:');
+    console.log(text);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 main();
