@@ -4,7 +4,7 @@ A small web app to extract text from PDFs and gather reviews (frontend built wit
 
 ## Live Demo
 
-- [career-nova-dun.vercel.app](https://career-nova-dun.vercel.app/)
+- [career-nova-dun.vercel.app](https://career-nova-cyan.vercel.app/)
 
 ## Features
 
